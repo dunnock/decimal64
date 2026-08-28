@@ -8,6 +8,10 @@ use std::str::FromStr;
 // Positive-only corpus used by both Decimal64 and UDecimal64.
 const CORPUS: &[&str] = &["0", "1.23", "123.4567", "9999999999.9999", "99.9999"];
 
+// 32-bit corpus: identical except the long input is the largest value that fits
+// `Decimal32::<4>` (i32::MAX raw), since "9999999999.9999" would be an `Overflow` error.
+const CORPUS32: &[&str] = &["0", "1.23", "123.4567", "214748.3647", "99.9999"];
+
 fn parse_scalar_s4(bytes: &[u8]) -> Result<Decimal64<4>, ParseError> {
     parse_scalar_slice::<4>(bytes)
 }
@@ -240,6 +244,26 @@ fn bench_parse_udecimal64(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_parse_decimal32(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse_decimal32");
+    for s in CORPUS32.iter().copied() {
+        group.bench_function(s, |b| {
+            b.iter(|| black_box(scaled_int::Decimal32::<4>::from_slice(black_box(s.as_bytes()))))
+        });
+    }
+    group.finish();
+}
+
+fn bench_parse_udecimal32(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse_udecimal32");
+    for s in CORPUS32.iter().copied() {
+        group.bench_function(s, |b| {
+            b.iter(|| black_box(scaled_int::UDecimal32::<4>::parse(black_box(s))))
+        });
+    }
+    group.finish();
+}
+
 fn bench_parse_f64(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse_f64");
     for s in CORPUS.iter().copied() {
@@ -274,6 +298,8 @@ criterion_group!(
     bench_parse_decimal64_scalar_baseline,
     bench_parse_decimal64_atoi_simd_candidate,
     bench_parse_udecimal64,
+    bench_parse_decimal32,
+    bench_parse_udecimal32,
     bench_parse_f64,
     bench_parse_rust_decimal,
     bench_parse_bigdecimal

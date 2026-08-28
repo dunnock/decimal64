@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use scaled_int::{Decimal64, UDecimal64};
+use scaled_int::{Decimal32, Decimal64, UDecimal32, UDecimal64};
 use std::hint::black_box;
 
 // Scale 4 — primary benchmark operands (financial prices)
@@ -47,6 +47,17 @@ static S_MUL_RHS_U: u64 = MUL_LARGE_RHS as u64;
 static S_DIV_LHS_U: u64 = DIV_LARGE_LHS as u64;
 static S_DIV_RHS_U: u64 = DIV_LARGE_RHS as u64;
 
+// 32-bit operands: the same scale-4 and scale-2 values fit i32/u32
+// (Decimal32<4> max is 214748.3647, so 987.6543 is comfortably in range).
+static S_LHS_32: i32 = LHS_RAW as i32;
+static S_RHS_32: i32 = RHS_RAW as i32;
+static S_LHS_S2_32: i32 = LHS_RAW_S2 as i32;
+static S_RHS_S2_32: i32 = RHS_RAW_S2 as i32;
+static S_LHS_32_U: u32 = LHS_RAW as u32;
+static S_RHS_32_U: u32 = RHS_RAW as u32;
+static S_LHS_S2_32_U: u32 = LHS_RAW_S2 as u32;
+static S_RHS_S2_32_U: u32 = RHS_RAW_S2 as u32;
+
 /// Load a signed value via volatile read to prevent constant-folding.
 ///
 /// # Safety
@@ -63,6 +74,20 @@ unsafe fn vload_i64(p: &i64) -> i64 {
 /// Pointer is valid and aligned (it's a reference to a static).
 #[inline(always)]
 unsafe fn vload_u64(p: &u64) -> u64 {
+    // SAFETY: this is just for test to not cache values
+    unsafe { std::ptr::read_volatile(p) }
+}
+
+/// 32-bit signed volatile load; see `vload_i64`.
+#[inline(always)]
+unsafe fn vload_i32(p: &i32) -> i32 {
+    // SAFETY: this is just for test to not cache values
+    unsafe { std::ptr::read_volatile(p) }
+}
+
+/// 32-bit unsigned volatile load; see `vload_u64`.
+#[inline(always)]
+unsafe fn vload_u32(p: &u32) -> u32 {
     // SAFETY: this is just for test to not cache values
     unsafe { std::ptr::read_volatile(p) }
 }
@@ -245,6 +270,113 @@ fn bench_arithmetic(c: &mut Criterion) {
         b.iter(|| {
             let lhs = UDecimal64::<4>::from_raw(unsafe { vload_u64(&S_DIV_LHS_U) });
             let rhs = UDecimal64::<4>::from_raw(unsafe { vload_u64(&S_DIV_RHS_U) });
+            black_box(lhs / rhs)
+        })
+    });
+
+    // ── 32-bit types — scale 4 (primary) and scale 2 ─────────────────────────
+    // No slow path exists: i64/u64 intermediates always suffice, so no `_large` variants.
+
+    group.bench_function("decimal32_add", |b| {
+        b.iter(|| {
+            let lhs = Decimal32::<4>::from_raw(unsafe { vload_i32(&S_LHS_32) });
+            let rhs = Decimal32::<4>::from_raw(unsafe { vload_i32(&S_RHS_32) });
+            black_box(lhs + rhs)
+        })
+    });
+
+    group.bench_function("udecimal32_add", |b| {
+        b.iter(|| {
+            let lhs = UDecimal32::<4>::from_raw(unsafe { vload_u32(&S_LHS_32_U) });
+            let rhs = UDecimal32::<4>::from_raw(unsafe { vload_u32(&S_RHS_32_U) });
+            black_box(lhs + rhs)
+        })
+    });
+
+    group.bench_function("i32_add", |b| {
+        b.iter(|| {
+            let lhs = unsafe { vload_i32(&S_LHS_32) };
+            let rhs = unsafe { vload_i32(&S_RHS_32) };
+            black_box(lhs + rhs)
+        })
+    });
+
+    group.bench_function("decimal32_mul", |b| {
+        b.iter(|| {
+            let lhs = Decimal32::<4>::from_raw(unsafe { vload_i32(&S_LHS_32) });
+            let rhs = Decimal32::<4>::from_raw(unsafe { vload_i32(&S_RHS_32) });
+            black_box(lhs * rhs)
+        })
+    });
+
+    group.bench_function("udecimal32_mul", |b| {
+        b.iter(|| {
+            let lhs = UDecimal32::<4>::from_raw(unsafe { vload_u32(&S_LHS_32_U) });
+            let rhs = UDecimal32::<4>::from_raw(unsafe { vload_u32(&S_RHS_32_U) });
+            black_box(lhs * rhs)
+        })
+    });
+
+    group.bench_function("i32_mul", |b| {
+        b.iter(|| {
+            let lhs = unsafe { vload_i32(&S_LHS_32) };
+            let rhs = unsafe { vload_i32(&S_RHS_32) };
+            black_box(lhs.wrapping_mul(rhs))
+        })
+    });
+
+    group.bench_function("decimal32_div", |b| {
+        b.iter(|| {
+            let lhs = Decimal32::<4>::from_raw(unsafe { vload_i32(&S_LHS_32) });
+            let rhs = Decimal32::<4>::from_raw(unsafe { vload_i32(&S_RHS_32) });
+            black_box(lhs / rhs)
+        })
+    });
+
+    group.bench_function("udecimal32_div", |b| {
+        b.iter(|| {
+            let lhs = UDecimal32::<4>::from_raw(unsafe { vload_u32(&S_LHS_32_U) });
+            let rhs = UDecimal32::<4>::from_raw(unsafe { vload_u32(&S_RHS_32_U) });
+            black_box(lhs / rhs)
+        })
+    });
+
+    group.bench_function("i32_div", |b| {
+        b.iter(|| {
+            let lhs = unsafe { vload_i32(&S_LHS_32) };
+            let rhs = unsafe { vload_i32(&S_RHS_32) };
+            black_box(lhs / rhs)
+        })
+    });
+
+    group.bench_function("decimal32_mul_s2", |b| {
+        b.iter(|| {
+            let lhs = Decimal32::<2>::from_raw(unsafe { vload_i32(&S_LHS_S2_32) });
+            let rhs = Decimal32::<2>::from_raw(unsafe { vload_i32(&S_RHS_S2_32) });
+            black_box(lhs * rhs)
+        })
+    });
+
+    group.bench_function("udecimal32_mul_s2", |b| {
+        b.iter(|| {
+            let lhs = UDecimal32::<2>::from_raw(unsafe { vload_u32(&S_LHS_S2_32_U) });
+            let rhs = UDecimal32::<2>::from_raw(unsafe { vload_u32(&S_RHS_S2_32_U) });
+            black_box(lhs * rhs)
+        })
+    });
+
+    group.bench_function("decimal32_div_s2", |b| {
+        b.iter(|| {
+            let lhs = Decimal32::<2>::from_raw(unsafe { vload_i32(&S_LHS_S2_32) });
+            let rhs = Decimal32::<2>::from_raw(unsafe { vload_i32(&S_RHS_S2_32) });
+            black_box(lhs / rhs)
+        })
+    });
+
+    group.bench_function("udecimal32_div_s2", |b| {
+        b.iter(|| {
+            let lhs = UDecimal32::<2>::from_raw(unsafe { vload_u32(&S_LHS_S2_32_U) });
+            let rhs = UDecimal32::<2>::from_raw(unsafe { vload_u32(&S_RHS_S2_32_U) });
             black_box(lhs / rhs)
         })
     });
