@@ -1,6 +1,6 @@
 # scaledint
 
-64-bit fixed-point decimal with compile-time scale, for Rust.
+64-bit and 32-bit fixed-point decimals with compile-time scale, for Rust.
 
 [![Crates.io](https://img.shields.io/crates/v/scaledint.svg)](https://crates.io/crates/scaledint)
 [![docs.rs](https://img.shields.io/docsrs/scaledint)](https://docs.rs/scaledint)
@@ -27,6 +27,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Type family
+
+All four types share the same API, arithmetic rules, parser grammar, rounding methods,
+`ParseError`, `Scientific` wrapper and `serde` support. They differ only in storage width
+and signedness:
+
+| Type             | Storage | Max scale `S` | Max value (raw)                | `mul`/`div` intermediate      |
+|------------------|---------|---------------|--------------------------------|-------------------------------|
+| `Decimal64<S>`   | `i64`   | 18            | ±9 223 372 036 854 775 807     | `i64` fast path, `i128` slow  |
+| `UDecimal64<S>`  | `u64`   | 18            | 18 446 744 073 709 551 615     | `u64` fast path, `u128` slow  |
+| `Decimal32<S>`   | `i32`   | 9             | ±2 147 483 647                 | `i64` always (single path)    |
+| `UDecimal32<S>`  | `u32`   | 9             | 4 294 967 295                  | `u64` always (single path)    |
+
+The unsigned types reject `+`/`-` when parsing, have no `MIN`, and their `Sub` operator
+returns `Option<Self>` (underflow is a domain condition, not a bug); use `saturating_sub`
+to clamp to zero. Convert between signed and unsigned with `as_signed()` / `as_unsigned()`
+(both `Option`).
+
+The 32-bit types are for dense storage of small-magnitude quantities (4 bytes each) and match
+Parquet's `INT32`-backed decimals (precision ≤ 9). Convert between widths at the same scale:
+
+```rust
+use scaled_int::{Decimal32, Decimal64};
+
+let small: Decimal32<2> = "123.45".parse().unwrap();
+let wide: Decimal64<2> = small.widen();            // lossless; also `Decimal64::from(small)`
+assert_eq!(wide.narrow(), Some(small));            // None if outside i32 range
+assert_eq!(Decimal64::<2>::MAX.narrow(), None);
+```
+
 ## Scale table
 
 `Decimal64<S>` stores the mathematical value as an `i64` whose unit is `10^(-S)`.
@@ -43,6 +73,19 @@ The scale `S` is enforced at compile time: `Decimal64<A> + Decimal64<B>` where `
 is a **compile error**. Use `rescale_into` to align scales explicitly.
 
 `S > 18` is rejected at compile time (would overflow `ONE = 10^S`).
+
+### 32-bit scale table
+
+`Decimal32<S>` / `UDecimal32<S>` store the value as an `i32` / `u32`; `S > 9` is rejected
+at compile time.
+
+| S  | Unit name    | `Decimal32` max (±)  | `UDecimal32` max    |
+|----|--------------|----------------------|---------------------|
+|  0 | integer      | 2 147 483 647        | 4 294 967 295       |
+|  2 | centis       | 21 474 836.47        | 42 949 672.95       |
+|  4 | basis points | 214 748.3647         | 429 496.7295        |
+|  6 | micros       | 2 147.483647         | 4 294.967295        |
+|  9 | nanos        | 2.147483647          | 4.294967295         |
 
 ## Arithmetic rules
 
@@ -135,6 +178,19 @@ Parse throughput vs. competitors at `Decimal64::<4>` on x86-64 Linux (stable Rus
 
 Full results and arithmetic benchmarks: [`docs/bench-results.md`](docs/bench-results.md).
 
+Same-scale arithmetic for all four types, `123.4567 × / ÷ 987.6543` at scale 4 (ns/op, median):
+
+| Op    | `Decimal64` | `UDecimal64` | `Decimal32` | `UDecimal32` |
+|-------|-------------|--------------|-------------|--------------|
+| `add` | 0.38        | 0.30         | 0.32        | 0.32         |
+| `mul` | 0.58        | 0.48         | 0.50        | 0.46         |
+| `div` | 1.95        | 1.95         | 2.03        | 1.97         |
+
+The 32-bit types run the same native 64-bit instructions as the 64-bit fast path, so they are
+at parity here; what they add is half the storage and a single code path with no `i128`
+fallback (the 64-bit `mul` costs ~3.1 ns once operands overflow `i64`). Details and
+parse numbers: [`docs/decimal32-bench-results.md`](docs/decimal32-bench-results.md).
+
 ## System requirements
 
 - **Stable Rust** — MSRV: 1.65 (edition 2021, `f64::round_ties_even` since 1.77;
@@ -145,4 +201,6 @@ Full results and arithmetic benchmarks: [`docs/bench-results.md`](docs/bench-res
 ## Design
 
 See [`docs/design.md`](docs/design.md) for the full design rationale, arithmetic rules,
-parse algorithm, and const-generic limitations on stable Rust.
+parse algorithm, and const-generic limitations on stable Rust;
+[`docs/udecimal64-design.md`](docs/udecimal64-design.md) for the unsigned variant; and
+[`docs/decimal32-design.md`](docs/decimal32-design.md) for the 32-bit variants.
