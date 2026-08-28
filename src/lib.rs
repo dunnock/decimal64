@@ -1,8 +1,19 @@
-//! Fixed-scale 64-bit signed decimal for Rust.
+//! Fixed-scale 64-bit and 32-bit decimals for Rust.
 //!
 //! Provides [`Decimal64<S>`], a `repr(transparent)` wrapper around `i64` where
 //! `S` is a compile-time const scale: the raw integer value represents the
-//! mathematical value multiplied by `10^S`.
+//! mathematical value multiplied by `10^S`. Four types share the same API:
+//!
+//! | Type              | Storage | Max scale | Max value (raw)            |
+//! |-------------------|---------|-----------|----------------------------|
+//! | [`Decimal64<S>`]  | `i64`   | 18        | ±9 223 372 036 854 775 807 |
+//! | [`UDecimal64<S>`] | `u64`   | 18        | 18 446 744 073 709 551 615 |
+//! | [`Decimal32<S>`]  | `i32`   | 9         | ±2 147 483 647             |
+//! | [`UDecimal32<S>`] | `u32`   | 9         | 4 294 967 295              |
+//!
+//! The 32-bit types use native 64-bit intermediates for `mul`/`div` (no 128-bit
+//! path at all) and convert losslessly to their 64-bit siblings via `widen()` /
+//! `From`; the reverse direction is `narrow() -> Option<_>`.
 //!
 //! # Quick start
 //!
@@ -16,7 +27,8 @@
 //! ```
 //!
 //! See `docs/design.md` for the full design rationale, API surface, and
-//! arithmetic rules.
+//! arithmetic rules; `docs/udecimal64-design.md` and `docs/decimal32-design.md`
+//! for the unsigned and 32-bit variants.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![deny(unsafe_code)]
@@ -24,13 +36,19 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+pub mod decimal32;
 pub mod decimal64;
 pub(crate) mod parse;
+pub(crate) mod parse32;
 pub(crate) mod parse_unsigned;
+pub(crate) mod parse_unsigned32;
 pub mod scientific;
+pub mod udecimal32;
 pub mod udecimal64;
+pub use decimal32::Decimal32;
 pub use decimal64::Decimal64;
 pub use scientific::Scientific;
+pub use udecimal32::UDecimal32;
 pub use udecimal64::UDecimal64;
 
 #[cfg(feature = "serde")]
@@ -78,7 +96,8 @@ pub enum ParseError {
     Empty,
     /// A byte that is not a digit, sign, or dot was encountered.
     InvalidChar { byte: u8, pos: usize },
-    /// The accumulated value exceeded `i64` range for this scale.
+    /// The accumulated value exceeded the storage range (`i64`, `u64`, `i32`, or `u32`)
+    /// of the target type at this scale.
     Overflow,
     /// Nonzero value combined with a negative exponent so extreme that no
     /// representable non-zero value exists (returned by [`Scientific`] parsing).

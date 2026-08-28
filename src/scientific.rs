@@ -5,7 +5,9 @@ use core::fmt;
 use core::str::FromStr;
 
 use crate::ParseError;
+use crate::decimal32::Decimal32;
 use crate::decimal64::Decimal64;
+use crate::udecimal32::UDecimal32;
 use crate::udecimal64::UDecimal64;
 
 /// Newtype wrapper that adds scientific-notation parsing and display to any
@@ -24,6 +26,18 @@ impl<const S: u32> Scientific<Decimal64<S>> {
 
 impl<const S: u32> Scientific<UDecimal64<S>> {
     pub fn into_inner(self) -> UDecimal64<S> {
+        self.0
+    }
+}
+
+impl<const S: u32> Scientific<Decimal32<S>> {
+    pub fn into_inner(self) -> Decimal32<S> {
+        self.0
+    }
+}
+
+impl<const S: u32> Scientific<UDecimal32<S>> {
+    pub fn into_inner(self) -> UDecimal32<S> {
         self.0
     }
 }
@@ -234,6 +248,45 @@ impl<const S: u32> FromStr for Scientific<UDecimal64<S>> {
     }
 }
 
+/// 32-bit variant: the exponent is applied in `i64` (the mantissa always fits), then the
+/// result must fit `i32` — anything larger is `ParseError::Overflow`, exactly as a literal
+/// of that magnitude would be for `Decimal32<S>`.
+impl<const S: u32> FromStr for Scientific<Decimal32<S>> {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = s.as_bytes();
+        match find_exp_marker(bytes) {
+            None => Ok(Scientific(crate::parse32::parse::<S>(s)?)),
+            Some(pos) => {
+                let mantissa_raw = crate::parse32::parse::<S>(&s[..pos])?.raw() as i64;
+                let exponent = parse_exponent(&s[pos + 1..])?;
+                let raw = apply_exponent_i64(mantissa_raw, exponent)?;
+                let raw = i32::try_from(raw).map_err(|_| ParseError::Overflow)?;
+                Ok(Scientific(Decimal32::from_raw(raw)))
+            }
+        }
+    }
+}
+
+impl<const S: u32> FromStr for Scientific<UDecimal32<S>> {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = s.as_bytes();
+        match find_exp_marker(bytes) {
+            None => Ok(Scientific(crate::parse_unsigned32::parse::<S>(s)?)),
+            Some(pos) => {
+                let mantissa_raw = crate::parse_unsigned32::parse::<S>(&s[..pos])?.raw() as u64;
+                let exponent = parse_exponent(&s[pos + 1..])?;
+                let raw = apply_exponent_u64(mantissa_raw, exponent)?;
+                let raw = u32::try_from(raw).map_err(|_| ParseError::Overflow)?;
+                Ok(Scientific(UDecimal32::from_raw(raw)))
+            }
+        }
+    }
+}
+
 // ─── Display implementations ──────────────────────────────────────────────────
 
 /// Shared display logic for both signed and unsigned variants.
@@ -290,6 +343,28 @@ impl<const S: u32> fmt::Display for Scientific<UDecimal64<S>> {
     }
 }
 
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<const S: u32> fmt::Display for Scientific<Decimal32<S>> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let raw = self.0.raw();
+        if raw == 0 {
+            return write!(f, "0e0");
+        }
+        fmt_scientific_u64(raw.unsigned_abs() as u64, S, raw < 0, f)
+    }
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<const S: u32> fmt::Display for Scientific<UDecimal32<S>> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let raw = self.0.raw();
+        if raw == 0 {
+            return write!(f, "0e0");
+        }
+        fmt_scientific_u64(raw as u64, S, false, f)
+    }
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -300,6 +375,8 @@ mod tests {
 
     type S4 = Scientific<Decimal64<4>>;
     type U4 = Scientific<UDecimal64<4>>;
+    type S4_32 = Scientific<Decimal32<4>>;
+    type U4_32 = Scientific<UDecimal32<4>>;
 
     #[test]
     fn no_exponent_delegates() {
@@ -543,5 +620,96 @@ mod tests {
         // UDecimal64: exponent magnitude > 19 on nonzero mantissa
         let r: Result<Scientific<UDecimal64<0>>, _> = "1e-20".parse();
         assert_eq!(r, Err(ParseError::Underflow));
+    }
+
+    // ── 32-bit variants ─────────────────────────────────────────────────────
+
+    #[test]
+    fn d32_no_exponent_delegates() {
+        let r: S4_32 = "1.2345".parse().unwrap();
+        assert_eq!(r.0.raw(), 12345);
+        assert_eq!(r.into_inner(), Decimal32::<4>::from_raw(12345));
+    }
+
+    #[test]
+    fn d32_positive_exponent_exact() {
+        let r: S4_32 = "1.2345e2".parse().unwrap();
+        assert_eq!(r.0.raw(), 1_234_500);
+        let r: S4_32 = "-1.2345E2".parse().unwrap();
+        assert_eq!(r.0.raw(), -1_234_500);
+    }
+
+    #[test]
+    fn d32_negative_exponent_truncates() {
+        // 1.2345e-2 = 0.012345 → 0.0123 at scale 4
+        let r: S4_32 = "1.2345e-2".parse().unwrap();
+        assert_eq!(r.0.raw(), 123);
+    }
+
+    #[test]
+    fn d32_result_must_fit_i32() {
+        // 3e5 at scale 4 = raw 3_000_000_000 > i32::MAX, fits i64 → Overflow
+        let r: Result<S4_32, _> = "3e5".parse();
+        assert_eq!(r, Err(ParseError::Overflow));
+        // 2e5 at scale 4 = raw 2_000_000_000 fits
+        let r: S4_32 = "2e5".parse().unwrap();
+        assert_eq!(r.0.raw(), 2_000_000_000);
+        // huge exponent still reports Overflow, zero mantissa is fine
+        assert_eq!("1e40".parse::<S4_32>(), Err(ParseError::Overflow));
+        assert_eq!("0e40".parse::<S4_32>().unwrap().0.raw(), 0);
+    }
+
+    #[test]
+    fn d32_underflow_matches_64() {
+        assert_eq!("1e-40".parse::<S4_32>(), Err(ParseError::Underflow));
+        assert_eq!("1e-40".parse::<S4>(), Err(ParseError::Underflow));
+    }
+
+    #[test]
+    fn u32_parse_and_range() {
+        let r: U4_32 = "1.2345e2".parse().unwrap();
+        assert_eq!(r.0.raw(), 1_234_500);
+        // 4e5 at scale 4 = raw 4_000_000_000 fits u32 but not i32
+        let r: U4_32 = "4e5".parse().unwrap();
+        assert_eq!(r.0.raw(), 4_000_000_000);
+        assert_eq!("5e5".parse::<U4_32>(), Err(ParseError::Overflow));
+        assert!(matches!(
+            "-1e2".parse::<U4_32>(),
+            Err(ParseError::InvalidChar { byte: b'-', pos: 0 })
+        ));
+    }
+
+    #[cfg(any(feature = "std", feature = "alloc"))]
+    #[test]
+    fn display_32_matches_64_for_same_value() {
+        for raw in [0i32, 1, -1, 12345, -12345, 1_000_000, 2_000_000_000, i32::MIN, i32::MAX] {
+            let d32 = Scientific(Decimal32::<4>::from_raw(raw));
+            let d64 = Scientific(Decimal32::<4>::from_raw(raw).widen());
+            assert_eq!(d32.to_string(), d64.to_string(), "raw={raw}");
+        }
+        for raw in [0u32, 1, 12345, 1_000_000, 4_000_000_000, u32::MAX] {
+            let u32v = Scientific(UDecimal32::<4>::from_raw(raw));
+            let u64v = Scientific(UDecimal32::<4>::from_raw(raw).widen());
+            assert_eq!(u32v.to_string(), u64v.to_string(), "raw={raw}");
+        }
+    }
+
+    #[cfg(any(feature = "std", feature = "alloc"))]
+    #[test]
+    fn display_32_round_trips() {
+        // Round-trips exactly when the normalised mantissa has at most S fractional digits
+        // (parse truncates the mantissa to S digits before applying the exponent).
+        for raw in [1i32, -1, 12345, -1_234_500, 2_000_000_000, 1_000_000_000] {
+            let d = Scientific(Decimal32::<4>::from_raw(raw));
+            let back: S4_32 = d.to_string().parse().unwrap();
+            assert_eq!(back, d, "raw={raw}");
+        }
+        // A 10-significant-digit value is lossy by design — identically for both widths.
+        let s = Scientific(Decimal32::<4>::MIN).to_string();
+        assert_eq!(s, "-2.147483648e5");
+        let back32: S4_32 = s.parse().unwrap();
+        let back64: S4 = s.parse().unwrap();
+        assert_eq!(back32.0.raw(), -2_147_400_000);
+        assert_eq!(back32.0.widen(), back64.0);
     }
 }
